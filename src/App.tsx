@@ -1,5 +1,20 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type MouseEvent } from 'react'
-import type { Channel, FeedFilter, FeedItem, ImportResult, VideoFlags } from './types'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent,
+} from 'react'
+import type {
+  Channel,
+  CommentItem,
+  FeedFilter,
+  FeedItem,
+  ImportResult,
+  VideoFlags,
+} from './types'
 import './App.css'
 
 const FILTERS: Array<{ id: FeedFilter; label: string }> = [
@@ -11,6 +26,8 @@ const FILTERS: Array<{ id: FeedFilter; label: string }> = [
   { id: 'liked', label: 'Liked' },
   { id: 'archived', label: 'Archive' },
 ]
+
+const AUTO_REFRESH_MS = 30_000
 
 function formatWhen(ms: number, label: string): string {
   if (label && /ago|Streamed|Live/i.test(label)) {
@@ -29,6 +46,17 @@ function formatWhen(ms: number, label: string): string {
   if (days < 60) return `${Math.floor(days / 7)}w ago`
   if (days < 730) return `${Math.floor(days / 30)}mo ago`
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function formatCount(n: number | null | undefined): string {
+  if (!n || n <= 0) return ''
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) {
+    const v = n / 1000
+    return `${v >= 100 ? Math.round(v) : v.toFixed(v >= 10 ? 0 : 1).replace(/\.0$/, '')}K`
+  }
+  const v = n / 1_000_000
+  return `${v >= 100 ? Math.round(v) : v.toFixed(v >= 10 ? 1 : 2).replace(/\.0$/, '')}M`
 }
 
 function applyFlags(item: FeedItem, flags: VideoFlags): FeedItem {
@@ -74,6 +102,16 @@ function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const [autoProgress, setAutoProgress] = useState(0)
+  const [autoEnabled, setAutoEnabled] = useState(true)
+  const [commentsFor, setCommentsFor] = useState<FeedItem | null>(null)
+  const [comments, setComments] = useState<CommentItem[]>([])
+  const [commentsLoading, setCommentsLoading] = useState(false)
+  const [commentsError, setCommentsError] = useState<string | null>(null)
+
+  const refreshInFlight = useRef(false)
+  const cycleStartedAt = useRef(Date.now())
 
   const loadChannels = useCallback(async () => {
     const [list, colors] = await Promise.all([
@@ -87,21 +125,28 @@ function App() {
   const loadFeedCached = useCallback(async () => {
     const feed = (await tiny.api.call('listFeed')) as FeedItem[]
     setItems(feed)
+    if (feed.length) setLastUpdatedAt(Date.now())
     return feed
   }, [])
 
   const refreshFeed = useCallback(async (showBusy = false) => {
+    if (refreshInFlight.current) return
+    refreshInFlight.current = true
     if (showBusy) setBusy(true)
     else setRefreshing(true)
     setError(null)
     try {
       const feed = (await tiny.api.call('refreshFeed')) as FeedItem[]
       setItems(feed)
+      setLastUpdatedAt(Date.now())
+      cycleStartedAt.current = Date.now()
+      setAutoProgress(0)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
       setRefreshing(false)
+      refreshInFlight.current = false
     }
   }, [])
 
@@ -110,7 +155,6 @@ function App() {
       try {
         await loadChannels()
         const cached = await loadFeedCached()
-        // Soft network refresh in background; only block if nothing cached.
         await refreshFeed(cached.length === 0)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -118,10 +162,53 @@ function App() {
     })()
   }, [loadChannels, loadFeedCached, refreshFeed])
 
+  // Auto-refresh countdown + soft poll every 30s while focused.
+  useEffect(() => {
+    if (!autoEnabled) {
+      setAutoProgress(0)
+      return
+    }
+
+    const tick = window.setInterval(() => {
+      if (document.hidden) return
+      const elapsed = Date.now() - cycleStartedAt.current
+      const progress = Math.min(1, elapsed / AUTO_REFRESH_MS)
+      setAutoProgress(progress)
+      if (elapsed >= AUTO_REFRESH_MS) {
+        cycleStartedAt.current = Date.now()
+        setAutoProgress(0)
+        void refreshFeed(false)
+      }
+    }, 200)
+
+    const onVisibility = () => {
+      if (!document.hidden) {
+        // Resume cleanly after returning to the window.
+        cycleStartedAt.current = Date.now()
+        setAutoProgress(0)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      window.clearInterval(tick)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [autoEnabled, refreshFeed])
+
   const visibleItems = useMemo(
     () => filterItems(items, filter, selectedChannelId),
     [items, filter, selectedChannelId],
   )
+
+  const updatedLabel = useMemo(() => {
+    if (refreshing) return 'Updating feed…'
+    if (!lastUpdatedAt) return 'Waiting for first update'
+    const sec = Math.max(0, Math.floor((Date.now() - lastUpdatedAt) / 1000))
+    if (sec < 5) return 'Updated just now'
+    if (sec < 60) return `Updated ${sec}s ago`
+    return `Updated ${Math.floor(sec / 60)}m ago`
+  }, [lastUpdatedAt, refreshing, autoProgress])
 
   async function onAddChannel(e: FormEvent) {
     e.preventDefault()
@@ -241,6 +328,26 @@ function App() {
     }
   }
 
+  async function openComments(item: FeedItem, ev?: MouseEvent) {
+    ev?.stopPropagation()
+    ev?.preventDefault()
+    setCommentsFor(item)
+    setComments([])
+    setCommentsError(null)
+    setCommentsLoading(true)
+    try {
+      const list = (await tiny.api.call('getComments', {
+        videoId: item.videoId,
+        limit: 30,
+      })) as CommentItem[]
+      setComments(list)
+    } catch (err) {
+      setCommentsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCommentsLoading(false)
+    }
+  }
+
   async function onExportData() {
     setStatus(null)
     setError(null)
@@ -299,7 +406,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${commentsFor ? 'with-comments' : ''}`}>
       <aside className="sidebar">
         <header className="sidebar-head">
           <h1>YT Feed</h1>
@@ -434,6 +541,13 @@ function App() {
       </aside>
 
       <main className="main">
+        <div
+          className={`auto-bar ${refreshing ? 'pulse' : ''}`}
+          style={{ ['--p' as string]: String(autoEnabled ? autoProgress : 0) }}
+        >
+          <div className="auto-fill" />
+        </div>
+
         <header className="main-head">
           <div>
             <h2>Latest from your channels</h2>
@@ -441,12 +555,27 @@ function App() {
               {selectedChannelId
                 ? channels.find((c) => c.id === selectedChannelId)?.title || 'Channel'
                 : 'All subscriptions'}
-              {refreshing ? ' · updating…' : ''}
+              {' · '}
+              {updatedLabel}
             </p>
           </div>
-          <span className="count">
-            {busy ? 'Loading…' : `${visibleItems.length} item${visibleItems.length === 1 ? '' : 's'}`}
-          </span>
+          <div className="head-right">
+            <label className="auto-toggle" title="Refresh feed every 30 seconds">
+              <input
+                type="checkbox"
+                checked={autoEnabled}
+                onChange={(e) => {
+                  setAutoEnabled(e.target.checked)
+                  cycleStartedAt.current = Date.now()
+                  setAutoProgress(0)
+                }}
+              />
+              Auto 30s
+            </label>
+            <span className="count">
+              {busy ? 'Loading…' : `${visibleItems.length} item${visibleItems.length === 1 ? '' : 's'}`}
+            </span>
+          </div>
         </header>
 
         <div className="filters" role="tablist">
@@ -495,8 +624,20 @@ function App() {
                     <i className="ch-dot" />
                     {item.channelTitle}
                   </span>
-                  <span className="when">
-                    {item.isLive ? 'Streaming now' : formatWhen(item.publishedMs, item.publishedAt)}
+                  <span className="stats-row">
+                    <span className="when">
+                      {item.isLive ? 'Streaming now' : formatWhen(item.publishedMs, item.publishedAt)}
+                    </span>
+                    {item.viewCount > 0 && (
+                      <span className="stat" title="Views">
+                        ▶ {formatCount(item.viewCount)}
+                      </span>
+                    )}
+                    {item.likeCount > 0 && (
+                      <span className="stat" title="Likes">
+                        ♥ {formatCount(item.likeCount)}
+                      </span>
+                    )}
                   </span>
                 </div>
               </button>
@@ -528,6 +669,13 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  title="Comments"
+                  onClick={(e) => void openComments(item, e)}
+                >
+                  💬
+                </button>
+                <button
+                  type="button"
                   className={item.isArchived ? 'on' : ''}
                   title="Archive"
                   onClick={(e) => void toggleFlag(item, 'isArchived', e)}
@@ -546,6 +694,47 @@ function App() {
           ))}
         </div>
       </main>
+
+      {commentsFor && (
+        <aside className="comments-panel" aria-label="Comments">
+          <header className="comments-head">
+            <div>
+              <h3>Comments</h3>
+              <p>{commentsFor.title}</p>
+            </div>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setCommentsFor(null)
+                setComments([])
+                setCommentsError(null)
+              }}
+            >
+              Close
+            </button>
+          </header>
+
+          {commentsLoading && <div className="comments-status">Loading comments…</div>}
+          {commentsError && <div className="banner err">{commentsError}</div>}
+          {!commentsLoading && !commentsError && comments.length === 0 && (
+            <div className="comments-status">No comments loaded.</div>
+          )}
+
+          <ul className="comments-list">
+            {comments.map((c) => (
+              <li key={c.id} className="comment">
+                <strong>{c.author}</strong>
+                <p>{c.text}</p>
+                <span className="comment-meta">
+                  {c.published}
+                  {c.likes ? ` · ♥ ${c.likes}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
     </div>
   )
 }
