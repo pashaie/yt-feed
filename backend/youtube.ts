@@ -13,6 +13,8 @@ export type FeedItem = {
   channelId: string;
   channelTitle: string;
   thumbnail: string;
+  /** Local cached image path when available */
+  thumbnailLocal?: string | null;
   url: string;
   /** Currently broadcasting */
   isLive: boolean;
@@ -21,6 +23,9 @@ export type FeedItem = {
   viewCount: number;
   likeCount: number;
 };
+
+export const CHANNEL_VIDEO_CACHE_LIMIT = 100;
+const VIDEOS_TAB_PARAMS = 'EgZ2aWRlb3PyBgQKAjoA';
 
 export type CommentItem = {
   id: string;
@@ -229,7 +234,65 @@ type LockupHit = {
   publishedLabel: string;
   publishedMs: number;
   viewCount: number;
+  thumbnail: string;
 };
+
+type InnertubeClient = { apiKey: string; clientVersion: string };
+
+let innertubeClient: InnertubeClient | null = null;
+
+async function getInnertubeClient(seedUrl?: string): Promise<InnertubeClient> {
+  if (innertubeClient) return innertubeClient;
+  const seeds = [
+    seedUrl,
+    'https://www.youtube.com/',
+  ].filter(Boolean) as string[];
+  for (const url of seeds) {
+    try {
+      const res = await fetch(url, { headers: YT_HEADERS, redirect: 'follow' });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const apiKey = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/)?.[1];
+      const clientVersion = html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/)?.[1];
+      if (apiKey && clientVersion) {
+        innertubeClient = { apiKey, clientVersion };
+        return innertubeClient;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  // Public web client fallback.
+  innertubeClient = {
+    apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+    clientVersion: '2.20261105.05.01',
+  };
+  return innertubeClient;
+}
+
+async function innertubeBrowse(body: Record<string, unknown>, seedUrl?: string): Promise<unknown> {
+  const client = await getInnertubeClient(seedUrl);
+  const res = await fetch(
+    `https://www.youtube.com/youtubei/v1/browse?prettyPrint=false&key=${client.apiKey}`,
+    {
+      method: 'POST',
+      headers: { ...YT_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: 'WEB',
+            clientVersion: client.clientVersion,
+            hl: 'en',
+            gl: 'US',
+          },
+        },
+        ...body,
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`YouTube browse failed (${res.status})`);
+  return res.json();
+}
 
 /** Convert YouTube relative labels like "Streamed 8mo ago" / "3 days ago". */
 export function parseRelativePublished(text: string): number | null {
@@ -277,6 +340,7 @@ function walkLockups(node: unknown, out: LockupHit[] = []): LockupHit[] {
         };
         contentImage?: {
           thumbnailViewModel?: {
+            image?: { sources?: Array<{ url?: string; width?: number }> };
             overlays?: Array<{
               thumbnailBottomOverlayViewModel?: {
                 badges?: Array<{ thumbnailBadgeViewModel?: { text?: string; badgeStyle?: string } }>;
@@ -306,10 +370,14 @@ function walkLockups(node: unknown, out: LockupHit[] = []): LockupHit[] {
         /^[\d.,]+\s*[KMB]?$/i.test((p.text?.content || '').trim()),
     );
     const viewCount = parseCompactCount(
-      viewPart?.accessibilityLabel?.match(/([\d.,]+\s*[KMB]?)/i)?.[1] ||
-        viewPart?.text?.content ||
+      (viewPart?.text?.content || '').replace(/\s*views?/i, '') ||
+        viewPart?.accessibilityLabel?.match(/([\d.,]+\s*[KMB]?)/i)?.[1] ||
         '',
     );
+    const sources = lockup.contentImage?.thumbnailViewModel?.image?.sources || [];
+    const bestThumb =
+      [...sources].sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url ||
+      `https://i.ytimg.com/vi/${lockup.contentId}/hqdefault.jpg`;
     const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || [];
     const badgeText = overlays
       .flatMap((o) => [
@@ -321,7 +389,15 @@ function walkLockups(node: unknown, out: LockupHit[] = []): LockupHit[] {
       ])
       .join(' ');
     const isLive = /LIVE/i.test(badgeText) || /^(Live now|LIVE)$/i.test(publishedLabel);
-    out.push({ id: lockup.contentId, title, isLive, publishedLabel, publishedMs, viewCount });
+    out.push({
+      id: lockup.contentId,
+      title,
+      isLive,
+      publishedLabel,
+      publishedMs,
+      viewCount,
+      thumbnail: bestThumb,
+    });
   }
 
   if (Array.isArray(node)) {
@@ -354,7 +430,7 @@ function parseStreamsHtml(
           publishedMs: hit.publishedMs,
           channelId,
           channelTitle,
-          thumbnail: `https://i.ytimg.com/vi/${hit.id}/hqdefault.jpg`,
+          thumbnail: hit.thumbnail || `https://i.ytimg.com/vi/${hit.id}/hqdefault.jpg`,
           url: `https://www.youtube.com/watch?v=${hit.id}`,
           isLive: hit.isLive,
           isStream: true,
@@ -392,6 +468,98 @@ function parseStreamsHtml(
   }
 
   return items;
+}
+
+function lockupsToFeedItems(
+  hits: LockupHit[],
+  channelId: string,
+  channelTitle: string,
+  opts: { isStream?: boolean } = {},
+): FeedItem[] {
+  const items: FeedItem[] = [];
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    if (seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    items.push({
+      videoId: hit.id,
+      title: hit.title || 'Video',
+      publishedAt: hit.publishedLabel,
+      publishedMs: hit.publishedMs,
+      channelId,
+      channelTitle,
+      thumbnail: hit.thumbnail || `https://i.ytimg.com/vi/${hit.id}/hqdefault.jpg`,
+      url: `https://www.youtube.com/watch?v=${hit.id}`,
+      isLive: hit.isLive,
+      isStream: !!opts.isStream || hit.isLive,
+      viewCount: hit.viewCount,
+      likeCount: 0,
+    });
+  }
+  return items;
+}
+
+function findBrowseContinuation(node: unknown): string | null {
+  return findContinuationToken(node);
+}
+
+/** Latest uploads for a channel (paginated via Innertube), capped at `limit`. */
+export async function fetchChannelVideos(
+  channelId: string,
+  channelTitle: string,
+  handle?: string | null,
+  limit = CHANNEL_VIDEO_CACHE_LIMIT,
+): Promise<FeedItem[]> {
+  const seed = handle
+    ? `https://www.youtube.com/${handle.startsWith('@') ? handle : '@' + handle}/videos`
+    : `https://www.youtube.com/channel/${channelId}/videos`;
+
+  const items: FeedItem[] = [];
+  const seen = new Set<string>();
+
+  let json = await innertubeBrowse(
+    { browseId: channelId, params: VIDEOS_TAB_PARAMS },
+    seed,
+  );
+  let page = 0;
+  while (json && page < 12 && items.length < limit) {
+    page += 1;
+    const hits = walkLockups(json);
+    for (const item of lockupsToFeedItems(hits, channelId, channelTitle)) {
+      if (seen.has(item.videoId)) continue;
+      seen.add(item.videoId);
+      items.push(item);
+      if (items.length >= limit) break;
+    }
+    if (items.length >= limit) break;
+    const token = findBrowseContinuation(json);
+    if (!token) break;
+    json = await innertubeBrowse({ continuation: token }, seed);
+  }
+
+  // Prefer absolute timestamps from RSS for the newest slice when available.
+  // If browse returned nothing, RSS alone is the fallback (usually ~15 items).
+  try {
+    const rss = await fetchChannelRss(channelId, channelTitle);
+    if (items.length === 0) return rss.slice(0, limit);
+    const byId = new Map(rss.map((r) => [r.videoId, r]));
+    for (let i = 0; i < items.length; i++) {
+      const r = byId.get(items[i].videoId);
+      if (!r) continue;
+      items[i] = {
+        ...items[i],
+        publishedAt: r.publishedAt || items[i].publishedAt,
+        publishedMs: r.publishedMs || items[i].publishedMs,
+        likeCount: Math.max(items[i].likeCount || 0, r.likeCount || 0),
+        viewCount: Math.max(items[i].viewCount || 0, r.viewCount || 0),
+        thumbnail: items[i].thumbnail || r.thumbnail,
+      };
+    }
+  } catch {
+    /* RSS enrichment is optional */
+  }
+
+  return items.slice(0, limit);
 }
 
 function findContinuationToken(node: unknown): string | null {

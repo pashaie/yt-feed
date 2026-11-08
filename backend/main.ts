@@ -16,9 +16,11 @@ import {
   type ChannelRow,
   type VideoStateRow,
 } from './db';
+import { cacheThumbnails } from './thumbs';
 import {
-  fetchChannelRss,
+  CHANNEL_VIDEO_CACHE_LIMIT,
   fetchChannelStreams,
+  fetchChannelVideos,
   fetchTopComments,
   resolveChannel,
   type FeedItem as RssItem,
@@ -116,6 +118,7 @@ function loadCachedFeed(db: Awaited<ReturnType<typeof openDb>>): EnrichFeedItem[
           channelId: row.channel_id,
           channelTitle: byChannel.get(row.channel_id)?.title || row.channel_id,
           thumbnail: row.thumbnail || `https://i.ytimg.com/vi/${row.video_id}/hqdefault.jpg`,
+          thumbnailLocal: row.thumbnail_local || null,
           url: row.url,
           isLive: !!row.is_live,
           isStream: !!row.is_stream,
@@ -138,6 +141,24 @@ function loadCachedFeed(db: Awaited<ReturnType<typeof openDb>>): EnrichFeedItem[
   return sortFeed(Array.from(byId.values()));
 }
 
+function trimLatestPerChannel(items: EnrichFeedItem[], limit: number): EnrichFeedItem[] {
+  const byCh = new Map<string, EnrichFeedItem[]>();
+  for (const item of items) {
+    const list = byCh.get(item.channelId) || [];
+    list.push(item);
+    byCh.set(item.channelId, list);
+  }
+  const out: EnrichFeedItem[] = [];
+  for (const list of byCh.values()) {
+    list.sort((a, b) => {
+      if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+      return (b.publishedMs || 0) - (a.publishedMs || 0);
+    });
+    out.push(...list.slice(0, limit));
+  }
+  return out;
+}
+
 async function buildFeedFromNetwork(): Promise<EnrichFeedItem[]> {
   const db = await database();
   const channels = listChannels(db);
@@ -149,28 +170,31 @@ async function buildFeedFromNetwork(): Promise<EnrichFeedItem[]> {
   if (channels.length > 0) {
     const results = await Promise.allSettled(
       channels.map(async (ch) => {
-        const [rss, streams] = await Promise.all([
-          fetchChannelRss(ch.id, ch.title),
+        const [videos, streams] = await Promise.all([
+          fetchChannelVideos(ch.id, ch.title, ch.handle, CHANNEL_VIDEO_CACHE_LIMIT),
           fetchChannelStreams(ch.id, ch.title, ch.handle),
         ]);
-        return { ch, rss, streams };
+        return { ch, videos, streams };
       }),
     );
 
     for (const result of results) {
       if (result.status !== 'fulfilled') continue;
-      const { rss, streams } = result.value;
+      const { videos, streams } = result.value;
       const streamIds = new Set(streams.map((s) => s.videoId));
 
-      for (const item of rss) {
+      for (const item of videos) {
         const merged: RssItem = {
           ...item,
-          isStream: streamIds.has(item.videoId),
+          isStream: streamIds.has(item.videoId) || item.isStream,
         };
         const existingStream = streams.find((s) => s.videoId === item.videoId);
         if (existingStream?.isLive) merged.isLive = true;
         if (existingStream?.viewCount && existingStream.viewCount > (merged.viewCount || 0)) {
           merged.viewCount = existingStream.viewCount;
+        }
+        if (existingStream?.thumbnail && !merged.thumbnail) {
+          merged.thumbnail = existingStream.thumbnail;
         }
         byId.set(item.videoId, enrich(merged, byChannel, stateById.get(item.videoId)));
       }
@@ -183,21 +207,26 @@ async function buildFeedFromNetwork(): Promise<EnrichFeedItem[]> {
             isStream: true,
             isLive: prev.isLive || stream.isLive,
             title: prev.title && prev.title !== 'Stream' ? prev.title : stream.title,
-            // Prefer real RSS timestamps; fall back to parsed stream label.
             publishedMs: prev.publishedMs || stream.publishedMs || 0,
             publishedAt: prev.publishedAt || stream.publishedAt || '',
             viewCount: Math.max(prev.viewCount || 0, stream.viewCount || 0),
             likeCount: Math.max(prev.likeCount || 0, stream.likeCount || 0),
+            thumbnail: prev.thumbnail || stream.thumbnail,
           });
           continue;
         }
-        byId.set(
-          stream.videoId,
-          enrich(stream, byChannel, stateById.get(stream.videoId)),
-        );
+        byId.set(stream.videoId, enrich(stream, byChannel, stateById.get(stream.videoId)));
       }
     }
   }
+
+  // Keep latest N per channel from network; then re-attach saved states outside the window.
+  const networkTrimmed = trimLatestPerChannel(
+    Array.from(byId.values()),
+    CHANNEL_VIDEO_CACHE_LIMIT,
+  );
+  byId.clear();
+  for (const item of networkTrimmed) byId.set(item.videoId, item);
 
   for (const row of states) {
     if (byId.has(row.video_id)) continue;
@@ -206,7 +235,20 @@ async function buildFeedFromNetwork(): Promise<EnrichFeedItem[]> {
     }
   }
 
-  const items = sortFeed(Array.from(byId.values()));
+  let items = sortFeed(Array.from(byId.values()));
+
+  if (appRef && items.length > 0) {
+    try {
+      const localMap = await cacheThumbnails(appRef.paths.cache, items);
+      items = items.map((item) => {
+        const local = localMap.get(item.videoId);
+        return local ? { ...item, thumbnailLocal: local } : item;
+      });
+    } catch (err) {
+      console.error('Thumbnail cache failed:', err);
+    }
+  }
+
   replaceFeedCache(
     db,
     items.map((i) => ({
@@ -214,6 +256,7 @@ async function buildFeedFromNetwork(): Promise<EnrichFeedItem[]> {
       channelId: i.channelId,
       title: i.title,
       thumbnail: i.thumbnail,
+      thumbnailLocal: i.thumbnailLocal,
       url: i.url,
       publishedAt: i.publishedAt,
       publishedMs: i.publishedMs,

@@ -75,6 +75,17 @@ function applyFlags(item: FeedItem, flags: VideoFlags): FeedItem {
   return { ...item, ...flags }
 }
 
+function thumbSrc(item: Pick<FeedItem, 'thumbnail' | 'thumbnailLocal'>): string {
+  if (item.thumbnailLocal) {
+    try {
+      return tiny.fileURL(item.thumbnailLocal)
+    } catch {
+      /* fall through */
+    }
+  }
+  return item.thumbnail
+}
+
 function filterItems(
   items: FeedItem[],
   filter: FeedFilter,
@@ -638,7 +649,7 @@ function App() {
             >
               <button type="button" className="card-hit" onClick={() => void onOpen(item)}>
                 <div className="thumb-wrap">
-                  <img src={item.thumbnail} alt="" referrerPolicy="no-referrer" />
+                  <img src={thumbSrc(item)} alt="" referrerPolicy="no-referrer" />
                   {item.isLive && <span className="live-badge">LIVE</span>}
                   {!item.isLive && item.isStream && <span className="stream-badge">STREAM</span>}
                   {!item.isRead && <span className="unwatched-dot" />}

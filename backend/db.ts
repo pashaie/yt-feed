@@ -86,6 +86,7 @@ function migrate(database: Database): void {
       channel_id TEXT NOT NULL,
       title TEXT NOT NULL,
       thumbnail TEXT,
+      thumbnail_local TEXT,
       url TEXT NOT NULL,
       published_at TEXT,
       published_ms INTEGER NOT NULL DEFAULT 0,
@@ -104,6 +105,7 @@ function migrate(database: Database): void {
     'is_stream INTEGER NOT NULL DEFAULT 0',
     'view_count INTEGER NOT NULL DEFAULT 0',
     'like_count INTEGER NOT NULL DEFAULT 0',
+    'thumbnail_local TEXT',
   ]) {
     const name = col.split(' ')[0];
     if (!hasColumn(database, 'feed_cache', name)) {
@@ -121,6 +123,7 @@ export type FeedCacheRow = {
   channel_id: string;
   title: string;
   thumbnail: string | null;
+  thumbnail_local: string | null;
   url: string;
   published_at: string | null;
   published_ms: number;
@@ -143,7 +146,7 @@ export function feedCacheAgeMs(database: Database): number | null {
 export function listFeedCache(database: Database): FeedCacheRow[] {
   return database
     .prepare(
-      `SELECT video_id, channel_id, title, thumbnail, url, published_at, published_ms,
+      `SELECT video_id, channel_id, title, thumbnail, thumbnail_local, url, published_at, published_ms,
               is_live, is_stream, view_count, like_count, fetched_at
        FROM feed_cache ORDER BY published_ms DESC`,
     )
@@ -157,6 +160,7 @@ export function replaceFeedCache(
     channelId: string;
     title: string;
     thumbnail?: string | null;
+    thumbnailLocal?: string | null;
     url: string;
     publishedAt?: string;
     publishedMs: number;
@@ -170,9 +174,9 @@ export function replaceFeedCache(
   database.exec('DELETE FROM feed_cache');
   const stmt = database.prepare(
     `INSERT INTO feed_cache (
-       video_id, channel_id, title, thumbnail, url, published_at, published_ms,
+       video_id, channel_id, title, thumbnail, thumbnail_local, url, published_at, published_ms,
        is_live, is_stream, view_count, like_count, fetched_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const item of items) {
     stmt.run(
@@ -180,6 +184,7 @@ export function replaceFeedCache(
       item.channelId,
       item.title,
       item.thumbnail ?? null,
+      item.thumbnailLocal ?? null,
       item.url,
       item.publishedAt ?? null,
       item.publishedMs || 0,

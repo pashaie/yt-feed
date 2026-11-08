@@ -16,6 +16,8 @@ export type FeedItem = {
   channelTitle: string
   channelColor: string
   thumbnail: string
+  /** Absolute disk path when the thumbnail was cached locally */
+  thumbnailLocal?: string | null
   url: string
   isLive: boolean
   isStream: boolean

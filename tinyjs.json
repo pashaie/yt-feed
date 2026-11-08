@@ -6,6 +6,7 @@
   "id": "com.ytfeed.app",
   "version": "0.1.0",
   "backend": "backend/main.ts",
+  "readAccess": true,
   "frontend": {
     "build": "bun run build",
     "dist": "web-dist",
