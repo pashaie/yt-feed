@@ -285,12 +285,19 @@ function App() {
     }
   }
 
-  async function onRemoveChannel(id: string) {
+  async function onRemoveChannel(ch: Channel) {
+    const ok = await tiny.dialog.confirm(`Remove “${ch.title}”?`, {
+      detail: 'This channel will be removed from your feed list.',
+      ok: 'Remove',
+      cancel: 'Cancel',
+    })
+    if (!ok) return
+
     setBusy(true)
     setError(null)
     try {
-      await tiny.api.call('removeChannel', { id })
-      if (selectedChannelId === id) setSelectedChannelId(null)
+      await tiny.api.call('removeChannel', { id: ch.id })
+      if (selectedChannelId === ch.id) setSelectedChannelId(null)
       await loadChannels()
       await refreshFeed(true)
     } catch (err) {
@@ -564,7 +571,7 @@ function App() {
                 <button
                   type="button"
                   className="icon-btn"
-                  onClick={() => void onRemoveChannel(ch.id)}
+                  onClick={() => void onRemoveChannel(ch)}
                   disabled={busy}
                   title="Remove channel"
                 >
