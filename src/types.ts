@@ -38,7 +38,7 @@ export type CommentItem = {
 
 export type FeedFilter =
   | 'subscriptions'
-  | 'unread'
+  | 'unwatched'
   | 'liked'
   | 'later'
   | 'archived'

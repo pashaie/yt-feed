@@ -3,6 +3,7 @@
   grid-template-columns: 320px 1fr;
   height: 100vh;
   min-height: 0;
+  transition: grid-template-columns 0.2s ease;
   background:
     radial-gradient(1100px 480px at 0% -20%, rgba(15, 110, 140, 0.14), transparent 55%),
     radial-gradient(800px 400px at 100% 0%, rgba(20, 40, 70, 0.08), transparent 50%),
@@ -11,6 +12,14 @@
 
 .app.with-comments {
   grid-template-columns: 300px 1fr minmax(280px, 360px);
+}
+
+.app.sidebar-collapsed {
+  grid-template-columns: 64px 1fr;
+}
+
+.app.sidebar-collapsed.with-comments {
+  grid-template-columns: 64px 1fr minmax(280px, 360px);
 }
 
 .sidebar {
@@ -22,6 +31,18 @@
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   backdrop-filter: blur(10px);
   min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-title {
+  min-width: 0;
 }
 
 .sidebar-head h1 {
@@ -37,6 +58,54 @@
   margin: 4px 0 0;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-h);
+  border: 1px solid var(--border);
+}
+
+.sidebar-toggle:hover {
+  background: color-mix(in srgb, var(--text-h) 6%, transparent);
+}
+
+.app.sidebar-collapsed .sidebar {
+  padding: 12px 8px;
+  align-items: center;
+}
+
+.app.sidebar-collapsed .sidebar-head {
+  width: 100%;
+  justify-content: center;
+}
+
+.app.sidebar-collapsed .sidebar-title,
+.app.sidebar-collapsed .add-form,
+.app.sidebar-collapsed .sidebar-actions,
+.app.sidebar-collapsed .bulk,
+.app.sidebar-collapsed .channel-meta,
+.app.sidebar-collapsed .channel-tools,
+.app.sidebar-collapsed .channel-list .empty {
+  display: none;
+}
+
+.app.sidebar-collapsed .channel-row {
+  grid-template-columns: 36px;
+  justify-content: center;
+  border-left-width: 0;
+  padding: 6px;
+}
+
+.app.sidebar-collapsed .channel-row.all {
+  margin-top: 8px;
 }
 
 .add-form {
@@ -401,7 +470,7 @@ button.ghost {
   transition: transform 0.15s ease, opacity 0.15s ease;
 }
 
-.feed-card.read {
+.feed-card.watched {
   opacity: 0.7;
 }
 
@@ -458,7 +527,7 @@ button.ghost {
   background: #111827;
 }
 
-.unread-dot {
+.unwatched-dot {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -509,6 +578,9 @@ button.ghost {
 }
 
 .stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -537,19 +609,32 @@ button.ghost {
   pointer-events: auto;
 }
 
-.actions button {
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
+.actions .icon-action {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--text-h);
   border: 1px solid var(--border);
-  padding: 4px 7px;
-  font-size: 0.7rem;
-  border-radius: 8px;
+  border-radius: 9px;
 }
 
-.actions button.on {
+.actions .icon-action:hover {
+  background: color-mix(in srgb, var(--text-h) 8%, transparent);
+}
+
+.actions .icon-action.on {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   color: var(--accent);
+}
+
+.actions .icon-action.danger:hover {
+  background: color-mix(in srgb, #e84855 16%, transparent);
+  border-color: color-mix(in srgb, #e84855 40%, var(--border));
+  color: #e84855;
 }
 
 .comments-panel {
@@ -634,9 +719,14 @@ button.ghost {
 }
 
 @media (max-width: 1100px) {
-  .app.with-comments {
+  .app.with-comments,
+  .app.sidebar-collapsed.with-comments {
     grid-template-columns: 280px 1fr;
     grid-template-rows: 1fr auto;
+  }
+
+  .app.sidebar-collapsed.with-comments {
+    grid-template-columns: 64px 1fr;
   }
 
   .comments-panel {
@@ -649,7 +739,9 @@ button.ghost {
 
 @media (max-width: 900px) {
   .app,
-  .app.with-comments {
+  .app.with-comments,
+  .app.sidebar-collapsed,
+  .app.sidebar-collapsed.with-comments {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
     height: auto;
@@ -660,6 +752,22 @@ button.ghost {
     border-right: 0;
     border-bottom: 1px solid var(--border);
     max-height: 42vh;
+  }
+
+  .app.sidebar-collapsed .sidebar {
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .app.sidebar-collapsed .channel-list {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow: visible;
   }
 
   .feed {

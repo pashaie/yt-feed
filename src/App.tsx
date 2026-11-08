@@ -15,11 +15,23 @@ import type {
   ImportResult,
   VideoFlags,
 } from './types'
+import {
+  IconArchive,
+  IconChat,
+  IconClock,
+  IconEye,
+  IconEyeOff,
+  IconHeart,
+  IconPanel,
+  IconPanelClose,
+  IconPlay,
+  IconTrash,
+} from './icons'
 import './App.css'
 
 const FILTERS: Array<{ id: FeedFilter; label: string }> = [
   { id: 'subscriptions', label: 'Subscriptions' },
-  { id: 'unread', label: 'Unread' },
+  { id: 'unwatched', label: 'Unwatched' },
   { id: 'streams', label: 'Streams' },
   { id: 'videos', label: 'Videos' },
   { id: 'later', label: 'Watch later' },
@@ -71,7 +83,7 @@ function filterItems(
   let list = channelId ? items.filter((i) => i.channelId === channelId) : items
 
   switch (filter) {
-    case 'unread':
+    case 'unwatched':
       return list.filter((i) => !i.isRead && !i.isArchived && !i.isHidden)
     case 'liked':
       return list.filter((i) => i.isLiked)
@@ -109,6 +121,7 @@ function App() {
   const [comments, setComments] = useState<CommentItem[]>([])
   const [commentsLoading, setCommentsLoading] = useState(false)
   const [commentsError, setCommentsError] = useState<string | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   const refreshInFlight = useRef(false)
   const cycleStartedAt = useRef(Date.now())
@@ -406,11 +419,23 @@ function App() {
   }
 
   return (
-    <div className={`app ${commentsFor ? 'with-comments' : ''}`}>
+    <div
+      className={`app ${commentsFor ? 'with-comments' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}
+    >
       <aside className="sidebar">
         <header className="sidebar-head">
-          <h1>YT Feed</h1>
-          <p>Subscriptions-style local feed</p>
+          <div className="sidebar-title">
+            <h1>YT Feed</h1>
+            <p>Subscriptions-style local feed</p>
+          </div>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            onClick={() => setSidebarCollapsed((v) => !v)}
+          >
+            {sidebarCollapsed ? <IconPanel size={18} /> : <IconPanelClose size={18} />}
+          </button>
         </header>
 
         <form className="add-form" onSubmit={onAddChannel}>
@@ -608,7 +633,7 @@ function App() {
           {visibleItems.map((item) => (
             <article
               key={item.videoId}
-              className={`feed-card ${item.isRead ? 'read' : 'unread'}`}
+              className={`feed-card ${item.isRead ? 'watched' : 'unwatched'}`}
               style={{ ['--ch' as string]: item.channelColor }}
             >
               <button type="button" className="card-hit" onClick={() => void onOpen(item)}>
@@ -616,7 +641,7 @@ function App() {
                   <img src={item.thumbnail} alt="" referrerPolicy="no-referrer" />
                   {item.isLive && <span className="live-badge">LIVE</span>}
                   {!item.isLive && item.isStream && <span className="stream-badge">STREAM</span>}
-                  {!item.isRead && <span className="unread-dot" />}
+                  {!item.isRead && <span className="unwatched-dot" />}
                 </div>
                 <div className="feed-meta">
                   <strong>{item.title}</strong>
@@ -630,12 +655,12 @@ function App() {
                     </span>
                     {item.viewCount > 0 && (
                       <span className="stat" title="Views">
-                        ▶ {formatCount(item.viewCount)}
+                        <IconPlay size={12} /> {formatCount(item.viewCount)}
                       </span>
                     )}
                     {item.likeCount > 0 && (
                       <span className="stat" title="Likes">
-                        ♥ {formatCount(item.likeCount)}
+                        <IconHeart size={12} /> {formatCount(item.likeCount)}
                       </span>
                     )}
                   </span>
@@ -645,49 +670,51 @@ function App() {
               <div className="actions">
                 <button
                   type="button"
-                  className={item.isRead ? 'on' : ''}
-                  title={item.isRead ? 'Mark unread' : 'Mark read'}
+                  className={`icon-action ${item.isRead ? 'on' : ''}`}
+                  title={item.isRead ? 'Mark unwatched' : 'Mark watched'}
                   onClick={(e) => void toggleFlag(item, 'isRead', e)}
                 >
-                  {item.isRead ? 'Read' : 'Unread'}
+                  {item.isRead ? <IconEye size={15} /> : <IconEyeOff size={15} />}
                 </button>
                 <button
                   type="button"
-                  className={item.isLiked ? 'on' : ''}
-                  title="Like"
+                  className={`icon-action ${item.isLiked ? 'on' : ''}`}
+                  title={item.isLiked ? 'Unlike' : 'Like'}
                   onClick={(e) => void toggleFlag(item, 'isLiked', e)}
                 >
-                  ♥
+                  <IconHeart size={15} />
                 </button>
                 <button
                   type="button"
-                  className={item.isLater ? 'on' : ''}
-                  title="Watch later"
+                  className={`icon-action ${item.isLater ? 'on' : ''}`}
+                  title={item.isLater ? 'Remove from watch later' : 'Watch later'}
                   onClick={(e) => void toggleFlag(item, 'isLater', e)}
                 >
-                  Later
+                  <IconClock size={15} />
                 </button>
                 <button
                   type="button"
+                  className="icon-action"
                   title="Comments"
                   onClick={(e) => void openComments(item, e)}
                 >
-                  💬
+                  <IconChat size={15} />
                 </button>
                 <button
                   type="button"
-                  className={item.isArchived ? 'on' : ''}
-                  title="Archive"
+                  className={`icon-action ${item.isArchived ? 'on' : ''}`}
+                  title={item.isArchived ? 'Unarchive' : 'Archive'}
                   onClick={(e) => void toggleFlag(item, 'isArchived', e)}
                 >
-                  Arch
+                  <IconArchive size={15} />
                 </button>
                 <button
                   type="button"
+                  className="icon-action danger"
                   title="Remove from feed"
                   onClick={(e) => void toggleFlag(item, 'isHidden', e)}
                 >
-                  ✕
+                  <IconTrash size={15} />
                 </button>
               </div>
             </article>
