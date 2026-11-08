@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@700&display=swap');
+
+:root {
+  --text: #2a3340;
+  --text-h: #101820;
+  --muted: #667384;
+  --bg: #e8eef4;
+  --panel: #f7fafc;
+  --input: #ffffff;
+  --border: #c8d3de;
+  --accent: #0f6e8c;
+  --display: 'IBM Plex Serif', Georgia, serif;
+  --sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+
+  font: 15px/1.45 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #c5ced8;
+    --text-h: #f2f5f8;
+    --muted: #8b97a6;
+    --bg: #0f141a;
+    --panel: #171e26;
+    --input: #121820;
+    --border: #2a3440;
+    --accent: #3aa0c0;
+    color-scheme: dark;
+  }
+
+  .banner.ok {
+    color: #8fdfb8;
+  }
+
+  .banner.err {
+    color: #ff9aa4;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  min-width: 320px;
+}
