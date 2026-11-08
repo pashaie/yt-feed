@@ -1,0 +1,215 @@
+# Build the Windows portable zip with tinyjs and publish a GitHub Release.
+#
+# Triggers:
+#   - push tag v*  (e.g. git tag v0.2.0 && git push origin v0.2.0)
+#   - workflow_dispatch (manual; optional version + tinyjs pin)
+#
+# Artifacts per release:
+#   - yt-feed-<ver>-win.zip
+#   - manifest.json  (urls point at this release — used by in-app update)
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver without v (e.g. 0.2.0). Empty = tinyjs.json version.'
+        required: false
+        type: string
+      tinyjs_tag:
+        description: 'tinyjs release tag (e.g. v0.72.0). Empty = latest.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark GitHub release as prerelease'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      zip: ${{ steps.meta.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Resolve version / tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${INPUT_VERSION:-}" ]]; then
+            VER="${INPUT_VERSION#v}"
+          else
+            VER="$(node -p "require('./tinyjs.json').version")"
+          fi
+          if [[ ! "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
+            echo "Invalid version: $VER" >&2
+            exit 1
+          fi
+          TAG="v$VER"
+          ZIP="yt-feed-${VER}-win.zip"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG ($ZIP)"
+
+      - name: Sync version into package files
+        shell: bash
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const ver = process.env.VER;
+          for (const file of ['tinyjs.json', 'package.json']) {
+            const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+            j.version = ver;
+            fs.writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
+          }
+          console.log('version set to', ver);
+          NODE
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Install tinyjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TINYJS_TAG: ${{ inputs.tinyjs_tag }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TEMP 'tinyjs'
+          $zip = Join-Path $env:RUNNER_TEMP 'tinyjs-windows-x86_64.zip'
+          if ("$env:TINYJS_TAG".Trim()) {
+            gh release download $env:TINYJS_TAG -R tarwin/tinyjsapp -p tinyjs-windows-x86_64.zip -D $env:RUNNER_TEMP
+          } else {
+            gh release download -R tarwin/tinyjsapp -p tinyjs-windows-x86_64.zip -D $env:RUNNER_TEMP
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'tinyjs download failed' }
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Expand-Archive $zip $dest
+          $cmd = Get-ChildItem $dest -Recurse -Filter tinyjs.cmd | Select-Object -First 1
+          if (-not $cmd) { throw 'tinyjs.cmd not found in zip' }
+          & $cmd.FullName version
+          "TINYJS_CMD=$($cmd.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish Windows zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Windows bsdtar must win over Git's GNU tar — otherwise publish
+          # writes a TAR named .zip that Expand-Archive opens as empty.
+          $env:PATH = "$env:SystemRoot\System32;$env:PATH"
+          $tar = (Get-Command tar).Source
+          Write-Host "tar: $tar"
+          if ($tar -notlike "$env:SystemRoot\*") {
+            throw "tar resolves to $tar, not Windows bsdtar"
+          }
+
+          Remove-Item -Recurse -Force dist, .build, web-dist -ErrorAction SilentlyContinue
+          & $env:TINYJS_CMD publish
+          if ($LASTEXITCODE -ne 0) { throw 'tinyjs publish failed' }
+
+          $ver = '${{ steps.meta.outputs.version }}'
+          $zipName = '${{ steps.meta.outputs.zip }}'
+          $zip = Join-Path 'dist\publish' $zipName
+          if (-not (Test-Path $zip)) {
+            $found = Get-ChildItem dist\publish\*-win.zip | Select-Object -First 1
+            if (-not $found) { throw 'no -win.zip in dist\publish' }
+            Copy-Item $found.FullName $zip
+          }
+
+          $x = Join-Path $env:RUNNER_TEMP 'zip-check'
+          Remove-Item -Recurse -Force $x -ErrorAction SilentlyContinue
+          Expand-Archive $zip $x
+          $exe = Join-Path $x 'yt-feed\yt-feed.exe'
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem $x -Recurse | Select-Object FullName
+            throw "zip missing yt-feed\yt-feed.exe — not a real zip?"
+          }
+          Write-Host "zip OK: $zipName ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
+
+      - name: Point manifest at this GitHub Release
+        shell: bash
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'dist/publish/manifest.json';
+          const m = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const url = `https://github.com/${process.env.REPO}/releases/download/${process.env.TAG}/${process.env.ZIP}`;
+          m.version = process.env.VER;
+          m.win = m.win || {};
+          m.win.url = url;
+          if (m.win.x86_64) m.win.x86_64.url = url;
+          fs.writeFileSync(path, JSON.stringify(m, null, 2) + '\n');
+          console.log(JSON.stringify(m, null, 2));
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yt-feed-windows
+          path: |
+            dist/publish/${{ steps.meta.outputs.zip }}
+            dist/publish/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VER: ${{ steps.meta.outputs.version }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+          PRERELEASE: ${{ inputs.prerelease || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARGS=(--title "YT Feed v${VER}" --notes "Windows portable build of YT Feed ${VER}.
+
+          Download \`${ZIP}\`, extract, and run \`yt-feed\\yt-feed.exe\` (WebView2 required on Windows 10).")
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json --clobber
+            echo "Updated existing release $TAG"
+          else
+            # For tag-push the tag already exists; for dispatch create from HEAD.
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              gh release create "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json "${ARGS[@]}"
+            else
+              gh release create "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json "${ARGS[@]}" --target "$GITHUB_SHA"
+            fi
+            echo "Created release $TAG"
+          fi
