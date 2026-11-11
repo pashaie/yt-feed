@@ -1,12 +1,11 @@
-# Build the Windows portable zip with tinyjs and publish a GitHub Release.
+# Build the Windows portable zip with Wails v3 and publish a GitHub Release.
 #
 # Triggers:
 #   - push tag v*  (e.g. git tag v0.2.0 && git push origin v0.2.0)
-#   - workflow_dispatch (manual; optional version + tinyjs pin)
+#   - workflow_dispatch (manual; optional version)
 #
 # Artifacts per release:
 #   - yt-feed-<ver>-win.zip
-#   - manifest.json  (urls point at this release — used by in-app update)
 
 name: Release
 
@@ -16,11 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Semver without v (e.g. 0.2.0). Empty = tinyjs.json version.'
-        required: false
-        type: string
-      tinyjs_tag:
-        description: 'tinyjs release tag (e.g. v0.72.0). Empty = latest.'
+        description: 'Semver without v (e.g. 0.2.0). Empty = build/config.yml version.'
         required: false
         type: string
       prerelease:
@@ -46,9 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Install wails3
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          wails3 version
 
       - name: Resolve version / tag
         id: meta
@@ -62,7 +69,7 @@ jobs:
           elif [[ -n "${INPUT_VERSION:-}" ]]; then
             VER="${INPUT_VERSION#v}"
           else
-            VER="$(node -p "require('./tinyjs.json').version")"
+            VER="$(grep -E '^\s*version:' build/config.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
           fi
           if [[ ! "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
             echo "Invalid version: $VER" >&2
@@ -84,103 +91,54 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
           const ver = process.env.VER;
-          for (const file of ['tinyjs.json', 'package.json']) {
-            const j = JSON.parse(fs.readFileSync(file, 'utf8'));
-            j.version = ver;
-            fs.writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
-          }
+          const pkg = JSON.parse(fs.readFileSync('frontend/package.json', 'utf8'));
+          pkg.version = ver;
+          fs.writeFileSync('frontend/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          let cfg = fs.readFileSync('build/config.yml', 'utf8');
+          cfg = cfg.replace(/version:\s*"[^"]+"/, `version: "${ver}"`);
+          fs.writeFileSync('build/config.yml', cfg);
           console.log('version set to', ver);
           NODE
 
-      - name: Install JS deps
+      - name: Install frontend deps
+        working-directory: frontend
         run: bun install --frozen-lockfile
 
-      - name: Install tinyjs
+      - name: Build Windows binary
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TINYJS_TAG: ${{ inputs.tinyjs_tag }}
-        shell: pwsh
+          GOPROXY: https://proxy.golang.org,direct
         run: |
           $ErrorActionPreference = 'Stop'
-          $dest = Join-Path $env:RUNNER_TEMP 'tinyjs'
-          $zip = Join-Path $env:RUNNER_TEMP 'tinyjs-windows-x86_64.zip'
-          if ("$env:TINYJS_TAG".Trim()) {
-            gh release download $env:TINYJS_TAG -R tarwin/tinyjsapp -p tinyjs-windows-x86_64.zip -D $env:RUNNER_TEMP
-          } else {
-            gh release download -R tarwin/tinyjsapp -p tinyjs-windows-x86_64.zip -D $env:RUNNER_TEMP
+          wails3 build
+          if ($LASTEXITCODE -ne 0) { throw 'wails3 build failed' }
+          if (-not (Test-Path 'bin\yt-feed.exe')) {
+            Get-ChildItem bin -ErrorAction SilentlyContinue | Select-Object FullName
+            throw 'bin\yt-feed.exe missing'
           }
-          if ($LASTEXITCODE -ne 0) { throw 'tinyjs download failed' }
-          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-          Expand-Archive $zip $dest
-          $cmd = Get-ChildItem $dest -Recurse -Filter tinyjs.cmd | Select-Object -First 1
-          if (-not $cmd) { throw 'tinyjs.cmd not found in zip' }
-          & $cmd.FullName version
-          "TINYJS_CMD=$($cmd.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Publish Windows zip
+      - name: Package zip
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Windows bsdtar must win over Git's GNU tar — otherwise publish
-          # writes a TAR named .zip that Expand-Archive opens as empty.
-          $env:PATH = "$env:SystemRoot\System32;$env:PATH"
-          $tar = (Get-Command tar).Source
-          Write-Host "tar: $tar"
-          if ($tar -notlike "$env:SystemRoot\*") {
-            throw "tar resolves to $tar, not Windows bsdtar"
-          }
-
-          Remove-Item -Recurse -Force dist, .build, web-dist -ErrorAction SilentlyContinue
-          & $env:TINYJS_CMD publish
-          if ($LASTEXITCODE -ne 0) { throw 'tinyjs publish failed' }
-
-          $ver = '${{ steps.meta.outputs.version }}'
-          $zipName = '${{ steps.meta.outputs.zip }}'
-          $zip = Join-Path 'dist\publish' $zipName
-          if (-not (Test-Path $zip)) {
-            $found = Get-ChildItem dist\publish\*-win.zip | Select-Object -First 1
-            if (-not $found) { throw 'no -win.zip in dist\publish' }
-            Copy-Item $found.FullName $zip
-          }
-
-          $x = Join-Path $env:RUNNER_TEMP 'zip-check'
-          Remove-Item -Recurse -Force $x -ErrorAction SilentlyContinue
-          Expand-Archive $zip $x
-          $exe = Join-Path $x 'yt-feed\yt-feed.exe'
-          if (-not (Test-Path $exe)) {
-            Get-ChildItem $x -Recurse | Select-Object FullName
-            throw "zip missing yt-feed\yt-feed.exe — not a real zip?"
-          }
-          Write-Host "zip OK: $zipName ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
-
-      - name: Point manifest at this GitHub Release
-        shell: bash
         env:
           VER: ${{ steps.meta.outputs.version }}
-          TAG: ${{ steps.meta.outputs.tag }}
           ZIP: ${{ steps.meta.outputs.zip }}
-          REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
-          const path = 'dist/publish/manifest.json';
-          const m = JSON.parse(fs.readFileSync(path, 'utf8'));
-          const url = `https://github.com/${process.env.REPO}/releases/download/${process.env.TAG}/${process.env.ZIP}`;
-          m.version = process.env.VER;
-          m.win = m.win || {};
-          m.win.url = url;
-          if (m.win.x86_64) m.win.x86_64.url = url;
-          fs.writeFileSync(path, JSON.stringify(m, null, 2) + '\n');
-          console.log(JSON.stringify(m, null, 2));
-          NODE
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "$env:SystemRoot\System32;$env:PATH"
+          New-Item -ItemType Directory -Force -Path dist\publish | Out-Null
+          $stage = Join-Path $env:RUNNER_TEMP 'yt-feed-stage'
+          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item bin\yt-feed.exe $stage\yt-feed.exe
+          $zipPath = Join-Path (Resolve-Path dist\publish) $env:ZIP
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath
+          Write-Host "zip OK: $env:ZIP ($([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB)"
 
       - uses: actions/upload-artifact@v4
         with:
           name: yt-feed-windows
-          path: |
-            dist/publish/${{ steps.meta.outputs.zip }}
-            dist/publish/manifest.json
+          path: dist/publish/${{ steps.meta.outputs.zip }}
           if-no-files-found: error
           retention-days: 14
 
@@ -196,20 +154,21 @@ jobs:
           set -euo pipefail
           ARGS=(--title "YT Feed v${VER}" --notes "Windows portable build of YT Feed ${VER}.
 
-          Download \`${ZIP}\`, extract, and run \`yt-feed\\yt-feed.exe\` (WebView2 required on Windows 10).")
+          Download \`${ZIP}\`, extract, and run \`yt-feed.exe\` (WebView2 required on Windows 10).
+
+          Proxy: Off / System / Custom — configure in the sidebar.")
           if [[ "${PRERELEASE}" == "true" ]]; then
             ARGS+=(--prerelease)
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json --clobber
+            gh release upload "$TAG" "dist/publish/${ZIP}" --clobber
             echo "Updated existing release $TAG"
           else
-            # For tag-push the tag already exists; for dispatch create from HEAD.
             if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-              gh release create "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json "${ARGS[@]}"
+              gh release create "$TAG" "dist/publish/${ZIP}" "${ARGS[@]}"
             else
-              gh release create "$TAG" "dist/publish/${ZIP}" dist/publish/manifest.json "${ARGS[@]}" --target "$GITHUB_SHA"
+              gh release create "$TAG" "dist/publish/${ZIP}" "${ARGS[@]}" --target "$GITHUB_SHA"
             fi
             echo "Created release $TAG"
           fi

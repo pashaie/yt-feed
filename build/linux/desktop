@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=YT Feed
+Comment=Desktop YouTube subscriptions feed
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/yt-feed.exe %u
+Terminal=false
+Type=Application
+Icon=yt-feed.exe
+Categories=Utility;
+StartupWMClass=yt-feed.exe
+
+ 

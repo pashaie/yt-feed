@@ -8,11 +8,15 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+frontend/node_modules
+frontend/dist
+bin
 dist
 web-dist
 dist-ssr
 .build
 *.local
+*.syso
 
 # Editor directories and files
 .vscode/*

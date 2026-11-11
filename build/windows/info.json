@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0409": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "YT Feed",
+			"FileDescription": "Desktop YouTube subscriptions feed",
+			"LegalCopyright": "© now, My Company",
+			"ProductName": "YT Feed",
+			"Comments": "This is a comment"
+		}
+	}
+}
