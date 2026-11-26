@@ -169,9 +169,11 @@ function App() {
     const next: ProxyConfig = {
       mode: (cfg.mode || 'system') as ProxyMode,
       url: cfg.url || '',
+      resolved: cfg.resolved || '',
     }
     setProxy(next)
     setProxyDraftUrl(next.url)
+    return next
   }, [])
 
   const refreshFeed = useCallback(async (showBusy = false) => {
@@ -186,6 +188,8 @@ function App() {
       setLastUpdatedAt(Date.now())
       cycleStartedAt.current = Date.now()
       setAutoProgress(0)
+      // System proxy port may have changed during refresh — refresh the label.
+      void loadProxy()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -193,7 +197,7 @@ function App() {
       setRefreshing(false)
       refreshInFlight.current = false
     }
-  }, [])
+  }, [loadProxy])
 
   useEffect(() => {
     void (async () => {
@@ -470,14 +474,14 @@ function App() {
     setStatus(null)
     try {
       await AppService.SetProxyConfig({ mode: mode as never, url: url.trim() })
-      const next = { mode, url: url.trim() }
-      setProxy(next)
-      setProxyDraftUrl(next.url)
+      const next = await loadProxy()
       setStatus(
         mode === 'off'
           ? 'Proxy disabled'
           : mode === 'system'
-            ? 'Using system proxy'
+            ? next.resolved
+              ? `System proxy: ${next.resolved}`
+              : 'System proxy: direct (none detected)'
             : `Custom proxy: ${next.url}`,
       )
       await refreshFeed(true)
@@ -586,6 +590,13 @@ function App() {
                 </button>
               ))}
             </div>
+            {proxy.mode === 'system' && (
+              <p className="proxy-resolved" title="Detected from OS proxy settings">
+                {proxy.resolved
+                  ? `Using ${proxy.resolved}`
+                  : 'No system proxy detected (direct)'}
+              </p>
+            )}
             {proxy.mode === 'custom' && (
               <div className="proxy-custom">
                 <input

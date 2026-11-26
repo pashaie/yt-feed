@@ -72,4 +72,6 @@ export type ProxyMode = 'off' | 'system' | 'custom'
 export type ProxyConfig = {
   mode: ProxyMode
   url: string
+  /** Detected active proxy (system/custom); empty means direct. */
+  resolved?: string
 }

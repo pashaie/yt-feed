@@ -191,6 +191,14 @@ button.ghost {
   min-width: 0;
 }
 
+.proxy-resolved {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted, #6b7280);
+  word-break: break-all;
+}
+
 .sidebar-actions.wrap {
   flex-wrap: wrap;
 }
