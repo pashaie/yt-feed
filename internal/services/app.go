@@ -125,6 +125,12 @@ func (a *AppService) refreshHTTP() {
 	a.youtube.HTTP = a.httpx.Client()
 }
 
+// refreshHTTPForFeed re-reads system proxy (port may change after VPN/proxy reconnect) then syncs the YouTube client.
+func (a *AppService) refreshHTTPForFeed() {
+	_ = a.httpx.ReloadSystemProxy()
+	a.refreshHTTP()
+}
+
 func (a *AppService) invalidateCache() {
 	a.mu.Lock()
 	a.memoryCache = nil
@@ -612,7 +618,7 @@ func trimLatestPerChannel(items []EnrichFeedItem, limit int) []EnrichFeedItem {
 }
 
 func (a *AppService) buildFeedFromNetwork() ([]EnrichFeedItem, error) {
-	a.refreshHTTP()
+	a.refreshHTTPForFeed()
 	channels, err := a.db.ListChannels()
 	if err != nil {
 		return nil, err
@@ -629,7 +635,18 @@ func (a *AppService) buildFeedFromNetwork() ([]EnrichFeedItem, error) {
 	for _, s := range states {
 		stateByID[s.VideoID] = s
 	}
+	// Seed from local feed_cache so subsequent refreshes only need the newest page.
 	byID := map[string]EnrichFeedItem{}
+	cachedCount := map[string]int{}
+	if cached, err := a.loadCachedFeed(); err == nil {
+		for _, item := range cached {
+			if _, ok := byChannel[item.ChannelID]; !ok {
+				continue
+			}
+			byID[item.VideoID] = item
+			cachedCount[item.ChannelID]++
+		}
+	}
 
 	type result struct {
 		videos  []youtube.FeedItem
@@ -641,8 +658,24 @@ func (a *AppService) buildFeedFromNetwork() ([]EnrichFeedItem, error) {
 		wg.Add(1)
 		go func(i int, ch db.ChannelRow) {
 			defer wg.Done()
-			videos, _ := a.youtube.FetchChannelVideos(ch.ID, ch.Title, ch.Handle, youtube.ChannelVideoCacheLimit)
-			streams, _ := a.youtube.FetchChannelStreams(ch.ID, ch.Title, ch.Handle)
+			deep := cachedCount[ch.ID] == 0
+			limit, maxPages := youtube.ChannelVideoShallowLimit, youtube.ChannelVideoShallowPages
+			if deep {
+				limit, maxPages = youtube.ChannelVideoCacheLimit, youtube.ChannelVideoDeepPages
+			}
+
+			var videos, streams []youtube.FeedItem
+			var inner sync.WaitGroup
+			inner.Add(2)
+			go func() {
+				defer inner.Done()
+				videos, _ = a.youtube.FetchChannelVideos(ch.ID, ch.Title, ch.Handle, limit, maxPages)
+			}()
+			go func() {
+				defer inner.Done()
+				streams, _ = a.youtube.FetchChannelStreams(ch.ID, ch.Title, ch.Handle)
+			}()
+			inner.Wait()
 			results[i] = result{videos: videos, streams: streams}
 		}(i, ch)
 	}

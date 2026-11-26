@@ -14,6 +14,9 @@ import (
 )
 
 const ChannelVideoCacheLimit = 100
+const ChannelVideoDeepPages = 12
+const ChannelVideoShallowPages = 1
+const ChannelVideoShallowLimit = 30
 const videosTabParams = "EgZ2aWRlb3PyBgQKAjoA"
 
 var (
@@ -683,9 +686,12 @@ func lockupsToFeedItems(hits []lockupHit, channelID, channelTitle string, isStre
 	return items
 }
 
-func (c *Client) FetchChannelVideos(channelID, channelTitle string, handle *string, limit int) ([]FeedItem, error) {
+func (c *Client) FetchChannelVideos(channelID, channelTitle string, handle *string, limit, maxPages int) ([]FeedItem, error) {
 	if limit <= 0 {
 		limit = ChannelVideoCacheLimit
+	}
+	if maxPages <= 0 {
+		maxPages = ChannelVideoDeepPages
 	}
 	seed := fmt.Sprintf("https://www.youtube.com/channel/%s/videos", channelID)
 	if handle != nil && *handle != "" {
@@ -704,7 +710,7 @@ func (c *Client) FetchChannelVideos(channelID, channelTitle string, handle *stri
 	if err != nil {
 		return nil, err
 	}
-	for page := 0; jsonBody != nil && page < 12 && len(items) < limit; page++ {
+	for page := 0; jsonBody != nil && page < maxPages && len(items) < limit; page++ {
 		var hits []lockupHit
 		walkLockups(jsonBody, &hits)
 		for _, item := range lockupsToFeedItems(hits, channelID, channelTitle, false) {
