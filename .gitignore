@@ -28,3 +28,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Wails task cache + generated icons (scaffolding under build/ stays tracked)
+.task/
+build/windows/icon.ico
+build/darwin/icons.icns
