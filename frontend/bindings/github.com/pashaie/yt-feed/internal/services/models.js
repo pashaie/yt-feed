@@ -107,6 +107,13 @@ export class EnrichFeedItem {
              */
             this["likeCount"] = 0;
         }
+        if (!("durationSec" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["durationSec"] = 0;
+        }
         if (!("channelColor" in $$source)) {
             /**
              * @member
