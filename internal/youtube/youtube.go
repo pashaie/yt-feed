@@ -62,6 +62,7 @@ type FeedItem struct {
 	IsStream       bool    `json:"isStream"`
 	ViewCount      int64   `json:"viewCount"`
 	LikeCount      int64   `json:"likeCount"`
+	DurationSec    int64   `json:"durationSec"`
 }
 
 type CommentItem struct {
@@ -356,6 +357,7 @@ func (c *Client) FetchChannelRSS(channelID, channelTitle string) ([]FeedItem, er
 		}
 		views, _ := strconv.ParseInt(extractAttr(entry, "media:statistics", "views"), 10, 64)
 		likes, _ := strconv.ParseInt(extractAttr(entry, "media:starRating", "count"), 10, 64)
+		durationSec, _ := strconv.ParseInt(extractAttr(entry, "yt:duration", "seconds"), 10, 64)
 		if mediaTitle != "" {
 			title = mediaTitle
 		}
@@ -370,9 +372,31 @@ func (c *Client) FetchChannelRSS(channelID, channelTitle string) ([]FeedItem, er
 			URL:          "https://www.youtube.com/watch?v=" + videoID,
 			ViewCount:    views,
 			LikeCount:    likes,
+			DurationSec:  durationSec,
 		})
 	}
 	return items, nil
+}
+
+// ParseDurationLabel turns overlay labels like "12:34" or "1:02:03" into seconds.
+func ParseDurationLabel(text string) int64 {
+	s := strings.TrimSpace(text)
+	if s == "" || regexp.MustCompile(`(?i)live|premiere|upcoming`).MatchString(s) {
+		return 0
+	}
+	if !regexp.MustCompile(`^\d{1,2}(:\d{2}){1,2}$`).MatchString(s) {
+		return 0
+	}
+	parts := strings.Split(s, ":")
+	var total int64
+	for _, p := range parts {
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			return 0
+		}
+		total = total*60 + n
+	}
+	return total
 }
 
 func ParseRelativePublished(text string) *int64 {
@@ -419,6 +443,7 @@ type lockupHit struct {
 	PublishedLabel string
 	PublishedMs    int64
 	ViewCount      int64
+	DurationSec    int64
 	Thumbnail      string
 }
 
@@ -537,6 +562,7 @@ func parseLockup(lockup map[string]any, contentID string) lockupHit {
 		}
 	}
 	badgeParts := []string{}
+	var durationSec int64
 	for _, o := range overlays {
 		om, _ := o.(map[string]any)
 		if bottom, ok := om["thumbnailBottomOverlayViewModel"].(map[string]any); ok {
@@ -546,6 +572,9 @@ func parseLockup(lockup map[string]any, contentID string) lockupHit {
 					if tb, ok := bm["thumbnailBadgeViewModel"].(map[string]any); ok {
 						if t, ok := tb["text"].(string); ok {
 							badgeParts = append(badgeParts, t)
+							if durationSec == 0 {
+								durationSec = ParseDurationLabel(t)
+							}
 						}
 					}
 				}
@@ -554,6 +583,9 @@ func parseLockup(lockup map[string]any, contentID string) lockupHit {
 		if ts, ok := om["thumbnailOverlayTimeStatusViewModel"].(map[string]any); ok {
 			if t, ok := ts["text"].(string); ok {
 				badgeParts = append(badgeParts, t)
+				if durationSec == 0 {
+					durationSec = ParseDurationLabel(t)
+				}
 			}
 			if s, ok := ts["style"].(string); ok {
 				badgeParts = append(badgeParts, s)
@@ -563,9 +595,12 @@ func parseLockup(lockup map[string]any, contentID string) lockupHit {
 	badgeText := strings.Join(badgeParts, " ")
 	isLive := regexp.MustCompile(`(?i)LIVE`).MatchString(badgeText) ||
 		regexp.MustCompile(`(?i)^(Live now|LIVE)$`).MatchString(publishedLabel)
+	if isLive {
+		durationSec = 0
+	}
 	return lockupHit{
 		ID: contentID, Title: title, IsLive: isLive, PublishedLabel: publishedLabel,
-		PublishedMs: publishedMs, ViewCount: viewCount, Thumbnail: thumb,
+		PublishedMs: publishedMs, ViewCount: viewCount, DurationSec: durationSec, Thumbnail: thumb,
 	}
 }
 
@@ -680,7 +715,7 @@ func lockupsToFeedItems(hits []lockupHit, channelID, channelTitle string, isStre
 			VideoID: hit.ID, Title: title, PublishedAt: hit.PublishedLabel, PublishedMs: hit.PublishedMs,
 			ChannelID: channelID, ChannelTitle: channelTitle, Thumbnail: thumb,
 			URL: "https://www.youtube.com/watch?v=" + hit.ID, IsLive: hit.IsLive,
-			IsStream: isStream || hit.IsLive, ViewCount: hit.ViewCount,
+			IsStream: isStream || hit.IsLive, ViewCount: hit.ViewCount, DurationSec: hit.DurationSec,
 		})
 	}
 	return items
@@ -764,6 +799,9 @@ func (c *Client) FetchChannelVideos(channelID, channelTitle string, handle *stri
 			}
 			if r.ViewCount > items[i].ViewCount {
 				items[i].ViewCount = r.ViewCount
+			}
+			if r.DurationSec > items[i].DurationSec {
+				items[i].DurationSec = r.DurationSec
 			}
 			if items[i].Thumbnail == "" {
 				items[i].Thumbnail = r.Thumbnail

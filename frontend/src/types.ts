@@ -23,6 +23,7 @@ export type FeedItem = {
   isStream: boolean
   viewCount: number
   likeCount: number
+  durationSec: number
   isRead: boolean
   isLiked: boolean
   isLater: boolean

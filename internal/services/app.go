@@ -577,7 +577,7 @@ func (a *AppService) loadCachedFeed() ([]EnrichFeedItem, error) {
 			VideoID: row.VideoID, Title: row.Title, PublishedAt: publishedAt, PublishedMs: row.PublishedMs,
 			ChannelID: row.ChannelID, ChannelTitle: row.ChannelID, Thumbnail: thumb,
 			ThumbnailLocal: row.ThumbnailLocal, URL: row.URL, IsLive: row.IsLive != 0, IsStream: row.IsStream != 0,
-			ViewCount: row.ViewCount, LikeCount: row.LikeCount,
+			ViewCount: row.ViewCount, LikeCount: row.LikeCount, DurationSec: row.DurationSec,
 		}, byChannel, stPtr)
 		byID[row.VideoID] = item
 	}
@@ -699,6 +699,12 @@ func (a *AppService) buildFeedFromNetwork() ([]EnrichFeedItem, error) {
 				if merged.Thumbnail == "" {
 					merged.Thumbnail = s.Thumbnail
 				}
+				if s.DurationSec > merged.DurationSec {
+					merged.DurationSec = s.DurationSec
+				}
+			}
+			if prev, ok := byID[item.VideoID]; ok && merged.DurationSec == 0 {
+				merged.DurationSec = prev.DurationSec
 			}
 			st := stateByID[item.VideoID]
 			var stPtr *db.VideoStateRow
@@ -799,7 +805,7 @@ func (a *AppService) buildFeedFromNetwork() ([]EnrichFeedItem, error) {
 			Thumbnail: thumb, ThumbnailLocal: item.ThumbnailLocal, URL: item.URL,
 			PublishedAt: publishedAt, PublishedMs: item.PublishedMs,
 			IsLive: item.IsLive, IsStream: item.IsStream,
-			ViewCount: item.ViewCount, LikeCount: item.LikeCount,
+			ViewCount: item.ViewCount, LikeCount: item.LikeCount, DurationSec: item.DurationSec,
 		}
 	}
 	_ = a.db.ReplaceFeedCache(cacheItems)

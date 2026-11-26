@@ -75,6 +75,15 @@ function formatCount(n: number | null | undefined): string {
   return `${v >= 100 ? Math.round(v) : v.toFixed(v >= 10 ? 1 : 2).replace(/\.0$/, '')}M`
 }
 
+function formatDuration(sec: number | null | undefined): string {
+  if (!sec || sec <= 0) return ''
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = Math.floor(sec % 60)
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 function applyFlags(item: FeedItem, flags: VideoFlags): FeedItem {
   return { ...item, ...flags }
 }
@@ -766,7 +775,9 @@ function App() {
             </div>
           )}
 
-          {visibleItems.map((item) => (
+          {visibleItems.map((item) => {
+            const duration = item.isLive ? '' : formatDuration(item.durationSec)
+            return (
             <article
               key={item.videoId}
               className={`feed-card ${item.isRead ? 'watched' : 'unwatched'}`}
@@ -777,6 +788,7 @@ function App() {
                   <img src={thumbSrc(item)} alt="" referrerPolicy="no-referrer" />
                   {item.isLive && <span className="live-badge">LIVE</span>}
                   {!item.isLive && item.isStream && <span className="stream-badge">STREAM</span>}
+                  {duration && <span className="duration-badge">{duration}</span>}
                   {!item.isRead && <span className="unwatched-dot" />}
                 </div>
                 <div className="feed-meta">
@@ -854,7 +866,8 @@ function App() {
                 </button>
               </div>
             </article>
-          ))}
+            )
+          })}
         </div>
       </main>
 

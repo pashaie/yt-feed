@@ -48,6 +48,7 @@ type FeedCacheRow struct {
 	IsStream       int     `json:"is_stream"`
 	ViewCount      int64   `json:"view_count"`
 	LikeCount      int64   `json:"like_count"`
+	DurationSec    int64   `json:"duration_sec"`
 	FetchedAt      int64   `json:"fetched_at"`
 }
 
@@ -139,6 +140,7 @@ func (d *DB) migrate() error {
 		"view_count INTEGER NOT NULL DEFAULT 0",
 		"like_count INTEGER NOT NULL DEFAULT 0",
 		"thumbnail_local TEXT",
+		"duration_sec INTEGER NOT NULL DEFAULT 0",
 	} {
 		name := strings.Fields(col)[0]
 		_ = d.ensureColumn("feed_cache", name, col)
@@ -211,7 +213,7 @@ func (d *DB) FeedCacheAgeMs() *int64 {
 func (d *DB) ListFeedCache() ([]FeedCacheRow, error) {
 	rows, err := d.sql.Query(`
 		SELECT video_id, channel_id, title, thumbnail, thumbnail_local, url, published_at, published_ms,
-		       is_live, is_stream, view_count, like_count, fetched_at
+		       is_live, is_stream, view_count, like_count, duration_sec, fetched_at
 		FROM feed_cache ORDER BY published_ms DESC`)
 	if err != nil {
 		return nil, err
@@ -222,7 +224,8 @@ func (d *DB) ListFeedCache() ([]FeedCacheRow, error) {
 		var r FeedCacheRow
 		if err := rows.Scan(
 			&r.VideoID, &r.ChannelID, &r.Title, &r.Thumbnail, &r.ThumbnailLocal, &r.URL,
-			&r.PublishedAt, &r.PublishedMs, &r.IsLive, &r.IsStream, &r.ViewCount, &r.LikeCount, &r.FetchedAt,
+			&r.PublishedAt, &r.PublishedMs, &r.IsLive, &r.IsStream, &r.ViewCount, &r.LikeCount,
+			&r.DurationSec, &r.FetchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -244,6 +247,7 @@ type FeedCacheItem struct {
 	IsStream       bool
 	ViewCount      int64
 	LikeCount      int64
+	DurationSec    int64
 }
 
 func (d *DB) ReplaceFeedCache(items []FeedCacheItem) error {
@@ -260,8 +264,8 @@ func (d *DB) ReplaceFeedCache(items []FeedCacheItem) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO feed_cache (
 			video_id, channel_id, title, thumbnail, thumbnail_local, url, published_at, published_ms,
-			is_live, is_stream, view_count, like_count, fetched_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			is_live, is_stream, view_count, like_count, duration_sec, fetched_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -277,7 +281,8 @@ func (d *DB) ReplaceFeedCache(items []FeedCacheItem) error {
 		}
 		if _, err := stmt.Exec(
 			item.VideoID, item.ChannelID, item.Title, item.Thumbnail, item.ThumbnailLocal, item.URL,
-			item.PublishedAt, item.PublishedMs, isLive, isStream, item.ViewCount, item.LikeCount, fetchedAt,
+			item.PublishedAt, item.PublishedMs, isLive, isStream, item.ViewCount, item.LikeCount,
+			item.DurationSec, fetchedAt,
 		); err != nil {
 			return err
 		}
